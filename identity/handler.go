@@ -1032,6 +1032,9 @@ type UpdateIdentityBody struct {
 // This endpoint updates an [identity](https://www.ory.com/docs/kratos/concepts/identity-user-model). The full identity
 // payload (except credentials) is expected.
 //
+// Changing the state from `active` to `inactive` invalidates the recovery codes and links that were created for the
+// identity through the admin API and have not been used. Reactivating the identity does not restore them.
+//
 // It is possible to update the identity's credentials as well. Using this operation, credentials will not be overwritten
 // but instead added to the list. For example, if a user has a social sign in connection set up, updating the credentials
 // will keep the social sign in connection and add the new credentials to the list. This prevents accidentally overwriting
@@ -1245,6 +1248,9 @@ func applyRegionPatchOps(body []byte, ident *Identity) ([]byte, error) {
 //
 // Partially updates an [identity's](https://www.ory.com/docs/kratos/concepts/identity-user-model) field using [JSON Patch](https://jsonpatch.com/).
 // The fields `id`, `stateChangedAt` and `credentials` can not be updated using this method.
+//
+// Changing the state from `active` to `inactive` invalidates the recovery codes and links that were created for the
+// identity through the admin API and have not been used. Reactivating the identity does not restore them.
 //
 //	Consumes:
 //	- application/json

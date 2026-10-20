@@ -41,6 +41,7 @@ type Persister interface {
 	continuity.Persister
 	identity.PrivilegedPool
 	identity.PendingTraitsChangePersister
+	identity.AdminRecoveryPersister
 	registration.FlowPersister
 	login.FlowPersister
 	settings.FlowPersister

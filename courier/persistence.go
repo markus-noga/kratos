@@ -22,6 +22,11 @@ type (
 
 		SetMessageStatus(context.Context, uuid.UUID, MessageStatus) error
 
+		// RequeueMessage puts a message that is still processing back into the
+		// queue. One that was sent or abandoned meanwhile keeps its status: its
+		// content is blanked, and it must not go out again.
+		RequeueMessage(context.Context, uuid.UUID) error
+
 		LatestQueuedMessage(ctx context.Context) (*Message, error)
 
 		IncrementMessageSendCount(context.Context, uuid.UUID) error

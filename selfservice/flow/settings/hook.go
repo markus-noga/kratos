@@ -37,6 +37,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 
+	"github.com/ory/kratos/defense/gate"
 	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/identity"
 	"github.com/ory/kratos/selfservice/flow"
@@ -100,6 +101,7 @@ type (
 		httpx.WriterProvider
 		otelx.Provider
 		transaction.PersistenceProvider
+		gate.Dependencies
 	}
 	HookExecutor struct {
 		d executorDependencies
@@ -247,6 +249,13 @@ func (e *HookExecutor) PostSettingsHook(ctx context.Context, w http.ResponseWrit
 		}
 
 		e.d.Logger().WithRequest(r).WithFields(logFields).Debug("ExecuteSettingsPrePersistHook completed successfully.")
+	}
+
+	// Defense: check each address the update adds before anything is saved, after the pre-persist hooks, which may
+	// change the identity. verify_new_address, which messages such an address in place of saving, checks it itself.
+	r, err = e.checkAddedAddresses(ctx, w, r, ctxUpdate.GetSessionIdentity(), i)
+	if err != nil {
+		return err
 	}
 
 	options := []identity.ManagerOption{identity.ManagerExposeValidationErrorsForInternalTypeAssertion}

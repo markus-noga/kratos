@@ -80,6 +80,9 @@ type IdentityAPI interface {
 			This endpoint creates a recovery code which should be given to the user in order for them to recover
 		(or activate) their account.
 
+		Creating a code invalidates the recovery codes and links that were created for the identity through the admin API
+		before and have not been used. Codes and links from the self-service recovery flow are not affected.
+
 			@param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
 			@return IdentityAPICreateRecoveryCodeForIdentityRequest
 	*/
@@ -94,6 +97,9 @@ type IdentityAPI interface {
 
 			This endpoint creates a recovery link which should be given to the user in order for them to recover
 		(or activate) their account.
+
+		Creating a link invalidates the recovery links and codes that were created for the identity through the admin API
+		before and have not been used. Links and codes from the self-service recovery flow are not affected.
 
 			@param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
 			@return IdentityAPICreateRecoveryLinkForIdentityRequest
@@ -363,6 +369,9 @@ type IdentityAPI interface {
 			Partially updates an [identity's](https://www.ory.com/docs/kratos/concepts/identity-user-model) field using [JSON Patch](https://jsonpatch.com/).
 		The fields `id`, `stateChangedAt` and `credentials` can not be updated using this method.
 
+		Changing the state from `active` to `inactive` invalidates the recovery codes and links that were created for the
+		identity through the admin API and have not been used. Reactivating the identity does not restore them.
+
 			@param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
 			@param id ID must be set to the ID of identity you want to update
 			@return IdentityAPIPatchIdentityRequest
@@ -378,6 +387,9 @@ type IdentityAPI interface {
 
 			This endpoint updates an [identity](https://www.ory.com/docs/kratos/concepts/identity-user-model). The full identity
 		payload (except credentials) is expected.
+
+		Changing the state from `active` to `inactive` invalidates the recovery codes and links that were created for the
+		identity through the admin API and have not been used. Reactivating the identity does not restore them.
 
 		It is possible to update the identity's credentials as well. Using this operation, credentials will not be overwritten
 		but instead added to the list. For example, if a user has a social sign in connection set up, updating the credentials
@@ -753,6 +765,9 @@ CreateRecoveryCodeForIdentity Create a Recovery Code
 This endpoint creates a recovery code which should be given to the user in order for them to recover
 (or activate) their account.
 
+Creating a code invalidates the recovery codes and links that were created for the identity through the admin API
+before and have not been used. Codes and links from the self-service recovery flow are not affected.
+
 	@param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
 	@return IdentityAPICreateRecoveryCodeForIdentityRequest
 */
@@ -911,6 +926,9 @@ CreateRecoveryLinkForIdentity Create a Recovery Link
 
 This endpoint creates a recovery link which should be given to the user in order for them to recover
 (or activate) their account.
+
+Creating a link invalidates the recovery links and codes that were created for the identity through the admin API
+before and have not been used. Links and codes from the self-service recovery flow are not affected.
 
 	@param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
 	@return IdentityAPICreateRecoveryLinkForIdentityRequest
@@ -3481,6 +3499,9 @@ PatchIdentity Patch an Identity
 Partially updates an [identity's](https://www.ory.com/docs/kratos/concepts/identity-user-model) field using [JSON Patch](https://jsonpatch.com/).
 The fields `id`, `stateChangedAt` and `credentials` can not be updated using this method.
 
+Changing the state from `active` to `inactive` invalidates the recovery codes and links that were created for the
+identity through the admin API and have not been used. Reactivating the identity does not restore them.
+
 	@param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
 	@param id ID must be set to the ID of identity you want to update
 	@return IdentityAPIPatchIdentityRequest
@@ -3648,6 +3669,9 @@ UpdateIdentity Update an Identity
 
 This endpoint updates an [identity](https://www.ory.com/docs/kratos/concepts/identity-user-model). The full identity
 payload (except credentials) is expected.
+
+Changing the state from `active` to `inactive` invalidates the recovery codes and links that were created for the
+identity through the admin API and have not been used. Reactivating the identity does not restore them.
 
 It is possible to update the identity's credentials as well. Using this operation, credentials will not be overwritten
 but instead added to the list. For example, if a user has a social sign in connection set up, updating the credentials

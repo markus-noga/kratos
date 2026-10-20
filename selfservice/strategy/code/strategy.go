@@ -85,6 +85,7 @@ type (
 		identity.PoolProvider
 		identity.PrivilegedPoolProvider
 		identity.PendingTraitsChangePersistenceProvider
+		identity.AdminRecoveryPersistenceProvider
 
 		courier.Provider
 

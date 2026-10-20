@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +18,8 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	"github.com/gofrs/uuid"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -246,6 +249,129 @@ func TestAdminStrategy(t *testing.T) {
 		action = gjson.GetBytes(body, "ui.action").String()
 		require.NotEmpty(t, action)
 		assert.Equal(t, "The recovery token is invalid or has already been used. Please retry the flow.", gjson.GetBytes(body, "ui.messages.0.text").String())
+	})
+
+	createLink := func(t *testing.T, i *identity.Identity) string {
+		t.Helper()
+		rl, _, err := adminSDK.IdentityAPI.CreateRecoveryLinkForIdentity(t.Context()).
+			CreateRecoveryLinkForIdentityBody(kratos.CreateRecoveryLinkForIdentityBody{IdentityId: i.ID.String()}).
+			Execute()
+		require.NoError(t, err)
+		return rl.RecoveryLink
+	}
+	assertLinkRecovers := func(t *testing.T, recoveryLink string) {
+		t.Helper()
+		res, err := publicTS.Client().Get(recoveryLink)
+		require.NoError(t, err)
+		assert.Contains(t, res.Request.URL.String(), conf.SelfServiceFlowSettingsUI(t.Context()).String())
+	}
+	assertLinkVoided := func(t *testing.T, recoveryLink string) {
+		t.Helper()
+		res, err := publicTS.Client().Get(recoveryLink)
+		require.NoError(t, err)
+		body := ioutilx.MustReadAll(res.Body)
+		assert.Equal(t, "The recovery token is invalid or has already been used. Please retry the flow.", gjson.GetBytes(body, "ui.messages.0.text").String(), "%s", body)
+	}
+
+	// recordLog records the registry's log at info level until the case ends. The registry is shared: the cases that
+	// use it run one at a time, as all here do.
+	recordLog := func(t *testing.T) *logtest.Hook {
+		t.Helper()
+		l := reg.Logger().Logger
+		level := l.GetLevel()
+		l.SetLevel(logrus.InfoLevel)
+		// The hook goes into a copy of the logger's hooks, and the case's end puts the
+		// old ones back, so that it stops recording when the case ends.
+		hooks := make(logrus.LevelHooks)
+		for lvl, hs := range l.Hooks {
+			hooks[lvl] = append([]logrus.Hook(nil), hs...)
+		}
+		old := l.ReplaceHooks(hooks)
+		t.Cleanup(func() { l.ReplaceHooks(old); l.SetLevel(level) })
+		return logtest.NewLocal(l)
+	}
+	// voidedInLog returns the voided counts of the last log line with the message for the identity.
+	voidedInLog := func(t *testing.T, log *logtest.Hook, message string, id uuid.UUID) (codes, links any) {
+		t.Helper()
+		for _, e := range slices.Backward(log.AllEntries()) {
+			if e.Message == message && e.Data["identity_id"] == id {
+				return e.Data["voided_recovery_codes"], e.Data["voided_recovery_links"]
+			}
+		}
+		t.Fatalf("no log line %q for identity %s", message, id)
+		return nil, nil
+	}
+
+	// Sequential like the cases above: they share one SQLite database, where concurrent requests can deadlock on
+	// pop's statement mutex against the write lock until the busy timeout.
+	t.Run("case=a new link voids the links created before", func(t *testing.T) {
+		i := createIdentityToRecover(t, reg, strings.ToLower(testhelpers.RandomEmail()))
+		log := recordLog(t)
+
+		older := createLink(t, i)
+		newer := createLink(t, i)
+
+		assertLinkVoided(t, older)
+		assertLinkRecovers(t, newer)
+
+		// The log tells why the older link stopped working.
+		codes, links := voidedInLog(t, log, "A recovery link has been created.", i.ID)
+		assert.Equal(t, 0, codes, "voided codes")
+		assert.Equal(t, 1, links, "voided links")
+	})
+
+	t.Run("case=a new code voids the link and a new link voids the code", func(t *testing.T) {
+		i := createIdentityToRecover(t, reg, strings.ToLower(testhelpers.RandomEmail()))
+		log := recordLog(t)
+
+		older := createLink(t, i)
+		c, _, err := adminSDK.IdentityAPI.CreateRecoveryCodeForIdentity(t.Context()).
+			CreateRecoveryCodeForIdentityBody(kratos.CreateRecoveryCodeForIdentityBody{IdentityId: i.ID.String()}).
+			Execute()
+		require.NoError(t, err)
+		assertLinkVoided(t, older)
+		codes, links := voidedInLog(t, log, "A recovery code has been created.", i.ID)
+		assert.Equal(t, 0, codes, "voided codes")
+		assert.Equal(t, 1, links, "voided links")
+
+		newer := createLink(t, i)
+		res, err := publicTS.Client().Get(c.RecoveryLink)
+		require.NoError(t, err)
+		action := gjson.GetBytes(ioutilx.MustReadAll(res.Body), "ui.action").String()
+		require.NotEmpty(t, action)
+		res, err = publicTS.Client().PostForm(action, url.Values{"code": {c.RecoveryCode}})
+		require.NoError(t, err)
+		body := ioutilx.MustReadAll(res.Body)
+		assert.Equal(t, "The recovery code is invalid or has already been used. Please try again.", gjson.GetBytes(body, "ui.messages.0.text").String(), "%s", body)
+		codes, links = voidedInLog(t, log, "A recovery link has been created.", i.ID)
+		assert.Equal(t, 1, codes, "voided codes")
+		assert.Equal(t, 0, links, "voided links")
+
+		assertLinkRecovers(t, newer)
+	})
+
+	t.Run("case=deactivating the identity voids its links", func(t *testing.T) {
+		i := createIdentityToRecover(t, reg, strings.ToLower(testhelpers.RandomEmail()))
+		var traits map[string]any
+		require.NoError(t, json.Unmarshal(i.Traits, &traits))
+		setState := func(state identity.State) {
+			_, _, err := adminSDK.IdentityAPI.UpdateIdentity(t.Context(), i.ID.String()).UpdateIdentityBody(kratos.UpdateIdentityBody{
+				SchemaId: i.SchemaID,
+				State:    string(state),
+				Traits:   traits,
+			}).Execute()
+			require.NoError(t, err)
+		}
+
+		log := recordLog(t)
+		l := createLink(t, i)
+		setState(identity.StateInactive)
+		setState(identity.StateActive)
+
+		assertLinkVoided(t, l)
+		codes, links := voidedInLog(t, log, "Deactivating the identity voided its unused recovery codes and links from the admin API.", i.ID)
+		assert.Equal(t, 0, codes, "voided codes")
+		assert.Equal(t, 1, links, "voided links")
 	})
 }
 

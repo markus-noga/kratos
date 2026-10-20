@@ -97,6 +97,8 @@ func TestLoginDefense(t *testing.T) {
 
 	publicTS, _ := testhelpers.NewKratosServerWithRouters(t, reg, httprouterx.NewRouterPublic(), httprouterx.NewRouterAdminWithPrefix())
 	testhelpers.NewErrorTestServer(t, reg)
+	// A local login UI: the browser flow redirects there, not to the public fallback UI.
+	testhelpers.NewLoginUIFlowEchoServer(t, reg)
 	apiClient := testhelpers.NewDebugClient(t)
 
 	identifier, pwd := x.NewUUID().String(), "password"

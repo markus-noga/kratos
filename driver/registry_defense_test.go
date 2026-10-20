@@ -67,12 +67,17 @@ func checkCoverage(t *testing.T, flow string, ids []string, defended map[string]
 // TestFlowStrategiesAreDefendedOrExempt does for recovery, verification and
 // registration what TestLoginStrategiesAreDefendedOrExempt does for login: a new
 // strategy fails here until someone decides how it meets the defense gate.
+// Settings strategies are not listed: none of them sends a message itself. The
+// messages of a settings update are checked where they are sent, on a path that
+// every strategy takes (settings.HookExecutor.PostSettingsHook, the
+// verify_new_address and verification hooks).
 func TestFlowStrategiesAreDefendedOrExempt(t *testing.T) {
 	t.Parallel()
-	_, reg := pkg.NewVeryFastRegistryWithoutDB(t)
 
+	// Each subtest has a registry of its own: a registry builds its strategies on first use, unsynchronized.
 	t.Run("flow=recovery", func(t *testing.T) {
 		t.Parallel()
+		_, reg := pkg.NewVeryFastRegistryWithoutDB(t)
 		var ids []string
 		defended := map[string]bool{}
 		for _, s := range reg.AllRecoveryStrategies() {
@@ -85,6 +90,7 @@ func TestFlowStrategiesAreDefendedOrExempt(t *testing.T) {
 
 	t.Run("flow=verification", func(t *testing.T) {
 		t.Parallel()
+		_, reg := pkg.NewVeryFastRegistryWithoutDB(t)
 		var ids []string
 		defended := map[string]bool{}
 		for _, s := range reg.AllVerificationStrategies() {
@@ -97,6 +103,7 @@ func TestFlowStrategiesAreDefendedOrExempt(t *testing.T) {
 
 	t.Run("flow=registration", func(t *testing.T) {
 		t.Parallel()
+		_, reg := pkg.NewVeryFastRegistryWithoutDB(t)
 		var ids []string
 		defended := map[string]bool{}
 		for _, s := range reg.AllRegistrationStrategies() {

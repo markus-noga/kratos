@@ -25,6 +25,7 @@ import (
 	"github.com/ory/kratos/x"
 	"github.com/ory/x/decoderx"
 	"github.com/ory/x/otelx"
+	"github.com/ory/x/sqlcon"
 )
 
 func (s *Strategy) PopulateLoginMethod(r *http.Request, requestedAAL identity.AuthenticatorAssuranceLevel, sr *login.Flow) error {
@@ -131,8 +132,11 @@ func (s *Strategy) Login(_ http.ResponseWriter, r *http.Request, f *login.Flow, 
 	}
 
 	i, c, err := s.d.PrivilegedIdentityPool().FindByCredentialsIdentifier(ctx, s.ID(), sess.IdentityID.String())
-	if err != nil {
+	if errors.Is(err, sqlcon.ErrNoRows()) {
 		return nil, s.handleLoginError(r, f, errors.WithStack(schema.NewNoTOTPDeviceRegistered()))
+	} else if err != nil {
+		// A failed lookup is a fault of the server, not a missing device.
+		return nil, s.handleLoginError(r, f, err)
 	}
 
 	var o identity.CredentialsTOTPConfig
@@ -142,6 +146,7 @@ func (s *Strategy) Login(_ http.ResponseWriter, r *http.Request, f *login.Flow, 
 
 	keyURL, upgraded, err := OpenURL(ctx, s.d, i.ID, o.TOTPURL)
 	if err != nil {
+		// A 5xx with the cause in debug (see OpenURL): returned as it is.
 		return nil, s.handleLoginError(r, f, x.WrapWithIdentityIDError(err, i.ID))
 	}
 

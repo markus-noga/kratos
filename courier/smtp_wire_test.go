@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gofrs/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -26,9 +27,10 @@ import (
 
 // smtpRecorder captures the raw SMTP commands and DATA lines a client sends.
 type smtpRecorder struct {
-	mu   sync.Mutex
-	cmds []string
-	data []string
+	mu       sync.Mutex
+	cmds     []string
+	data     []string
+	messages int // DATA transactions completed, accepted or not
 }
 
 func (r *smtpRecorder) snapshot() (cmds, data []string) {
@@ -37,9 +39,22 @@ func (r *smtpRecorder) snapshot() (cmds, data []string) {
 	return append([]string(nil), r.cmds...), append([]string(nil), r.data...)
 }
 
+func (r *smtpRecorder) messageCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.messages
+}
+
 // newRecordingSMTPServer starts a minimal SMTP server that accepts everything
 // and records the raw protocol. It returns a courier SMTP connection URI.
 func newRecordingSMTPServer(t *testing.T) (string, *smtpRecorder) {
+	t.Helper()
+	return newReplyingSMTPServer(t, func(int) string { return "250 ok" })
+}
+
+// newReplyingSMTPServer is newRecordingSMTPServer, but answers the n-th message
+// (counted from 0) with reply(n).
+func newReplyingSMTPServer(t *testing.T, reply func(n int) string) (string, *smtpRecorder) {
 	t.Helper()
 	rec := &smtpRecorder{}
 
@@ -63,7 +78,11 @@ func newRecordingSMTPServer(t *testing.T) (string, *smtpRecorder) {
 					if inData {
 						if line == "." {
 							inData = false
-							_, _ = fmt.Fprintf(conn, "250 ok\r\n")
+							rec.mu.Lock()
+							n := rec.messages
+							rec.messages++
+							rec.mu.Unlock()
+							_, _ = fmt.Fprintf(conn, "%s\r\n", reply(n))
 							continue
 						}
 						rec.mu.Lock()
@@ -212,5 +231,73 @@ func TestDispatchSMTPWireProtocol(t *testing.T) {
 		for _, line := range data {
 			assert.NotContains(t, line, "attacker@evil.com", "attacker address must never reach the wire")
 		}
+	})
+}
+
+// A message the channel abandoned is final: its content is blanked, so it must
+// not be queued again. Sent again, it would reach the recipient with an empty
+// subject and body, without the code it was meant to carry.
+func TestDispatchQueueKeepsAbandonedMessages(t *testing.T) {
+	t.Parallel()
+
+	newCourier := func(t *testing.T, smtpURL string) (courier.Courier, courier.Persister) {
+		_, reg := pkg.NewRegistryDefaultWithDSN(t, "", configx.WithValues(map[string]any{
+			config.ViperKeyCourierSMTPURL:              smtpURL,
+			config.ViperKeyCourierSMTPFrom:             "from@example.org",
+			config.ViperKeyCourierMessageRetries:       5,
+			config.ViperKeyClientSMTPNoPrivateIPRanges: false,
+		}))
+		c, err := reg.Courier(t.Context())
+		require.NoError(t, err)
+		c.FailOnDispatchError()
+		return c, reg.CourierPersister()
+	}
+	status := func(t *testing.T, p courier.Persister, id uuid.UUID) courier.MessageStatus {
+		t.Helper()
+		m, err := p.FetchMessage(t.Context(), id)
+		require.NoError(t, err)
+		return m.Status
+	}
+
+	t.Run("case=a permanent SMTP failure", func(t *testing.T) {
+		t.Parallel()
+		// A quota or policy reply is permanent for this message, and lets later ones through.
+		smtpURL, rec := newReplyingSMTPServer(t, func(n int) string {
+			if n == 0 {
+				return "550 5.4.5 Daily sending quota exceeded"
+			}
+			return "250 ok"
+		})
+		c, p := newCourier(t, smtpURL)
+		id, err := c.QueueEmail(t.Context(), templates.NewTestStub(&templates.TestStubModel{
+			To: "user@example.org", Subject: "Use code 987654 to log in", Body: "Your code is 987654",
+		}))
+		require.NoError(t, err)
+
+		require.Error(t, c.DispatchQueue(t.Context()), "the server rejects the message")
+		require.NoError(t, c.DispatchQueue(t.Context()))
+		assert.Equal(t, courier.MessageStatusAbandoned, status(t, p, id))
+		assert.Equal(t, 1, rec.messageCount(), "not sent again")
+	})
+
+	t.Run("case=an invalid recipient", func(t *testing.T) {
+		t.Parallel()
+		smtpURL, rec := newRecordingSMTPServer(t)
+		c, p := newCourier(t, smtpURL)
+		m := &courier.Message{
+			Type:         courier.MessageTypeEmail,
+			Recipient:    "user@example.org\r\nBcc: other@example.org",
+			Body:         "b",
+			Subject:      "s",
+			TemplateType: template.TypeTestStub,
+			Channel:      sqlxx.NullString("email"),
+		}
+		require.NoError(t, p.AddMessage(t.Context(), m))
+
+		require.Error(t, c.DispatchQueue(t.Context()))
+		require.NoError(t, c.DispatchQueue(t.Context()))
+		assert.Equal(t, courier.MessageStatusAbandoned, status(t, p, m.ID))
+		cmds, _ := rec.snapshot()
+		assert.Empty(t, rcptLines(cmds))
 	})
 }

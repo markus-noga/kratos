@@ -30,6 +30,7 @@ import (
 	"github.com/ory/kratos/schema"
 	"github.com/ory/kratos/x"
 	"github.com/ory/kratos/x/transaction"
+	"github.com/ory/pop/v6"
 	"github.com/ory/x/logrusx"
 	"github.com/ory/x/otelx"
 	"github.com/ory/x/popx"
@@ -53,6 +54,7 @@ type (
 		logrusx.Provider
 		transaction.PersistenceProvider
 		PendingTraitsChangePersistenceProvider
+		AdminRecoveryPersistenceProvider
 		template.Dependencies
 	}
 	ManagementProvider interface {
@@ -562,6 +564,29 @@ func (m *Manager) Update(ctx context.Context, updated *Identity, opts ...Manager
 	if len(o.ExcludedCredentialTypes) > 0 {
 		mods = append(mods, WithoutCredentialTypes(o.ExcludedCredentialTypes...))
 	}
+
+	// An inactive identity cannot redeem a recovery code or link, but a reactivation would revive the unused ones. So
+	// deactivating voids those an administrator created; one created while the identity is inactive is kept.
+	if original.State != StateInactive && updated.State == StateInactive {
+		var codes, links int
+		if err := m.r.TransactionalPersisterProvider().Transaction(ctx, func(ctx context.Context, _ *pop.Connection) (err error) {
+			if err := m.r.PrivilegedIdentityPool().UpdateIdentity(ctx, updated, mods...); err != nil {
+				return err
+			}
+			codes, links, err = m.r.AdminRecoveryPersister().DeleteUnusedAdminRecoveryCodesAndLinks(ctx, updated.ID)
+			return err
+		}); err != nil {
+			return err
+		}
+		// The deleted rows leave no other trace of why a code or link stopped working.
+		m.r.Logger().
+			WithField("identity_id", updated.ID).
+			WithField("voided_recovery_codes", codes).
+			WithField("voided_recovery_links", links).
+			Info("Deactivating the identity voided its unused recovery codes and links from the admin API.")
+		return nil
+	}
+
 	return m.r.PrivilegedIdentityPool().UpdateIdentity(ctx, updated, mods...)
 }
 

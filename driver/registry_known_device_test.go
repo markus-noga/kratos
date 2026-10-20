@@ -51,6 +51,7 @@ func TestKnownDeviceCookieFollowsTheDefense(t *testing.T) {
 				assert.IsType(t, defense.Noop{}, reg.Defense())
 			}
 			assert.Equal(t, tc.want, reg.KnownDeviceCookie(t.Context()) != nil)
+			assert.Equal(t, tc.want, reg.KnownDeviceCookieEnabled(t.Context()), "says the same as the codec")
 		})
 	}
 

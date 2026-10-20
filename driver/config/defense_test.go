@@ -67,3 +67,63 @@ func TestDefenseTrustedProxies(t *testing.T) {
 		require.Error(t, err)
 	})
 }
+
+func TestDefenseFingerprintSecretConfigured(t *testing.T) {
+	t.Parallel()
+	key := configx.WithValue(config.ViperKeyDefenseFingerprintKey, "fingerprint-key")
+	def := configx.WithValue(config.ViperKeySecretsDefault, []string{"default-secret"})
+
+	for _, tc := range []struct {
+		name   string
+		opts   []configx.OptionModifier
+		madeUp bool // SecretsDefault was read before, as the cookie store does
+		want   bool
+	}{
+		{name: "neither set"},
+		{name: "secrets.default made up", madeUp: true},
+		{name: "fingerprint_key", opts: []configx.OptionModifier{key}, want: true},
+		{name: "fingerprint_key and a made-up secrets.default", opts: []configx.OptionModifier{key}, madeUp: true, want: true},
+		{name: "secrets.default", opts: []configx.OptionModifier{def}, want: true},
+		{name: "secrets.default read before", opts: []configx.OptionModifier{def}, madeUp: true, want: true},
+	} {
+		t.Run("case="+tc.name, func(t *testing.T) {
+			t.Parallel()
+			c := config.MustNew(t, logrusx.New("", ""), &contextx.Default{}, append(tc.opts, configx.SkipValidation())...)
+			if tc.madeUp {
+				c.SecretsDefault(t.Context())
+			}
+			assert.Equal(t, tc.want, c.DefenseFingerprintSecretConfigured(t.Context()))
+		})
+	}
+}
+
+func TestKnownDeviceCookieSecretsConfigured(t *testing.T) {
+	t.Parallel()
+	cookie := configx.WithValue(config.ViperKeyKnownDeviceCookieSecrets, []string{"cookie-secret"})
+	def := configx.WithValue(config.ViperKeySecretsDefault, []string{"default-secret"})
+	key := configx.WithValue(config.ViperKeyDefenseFingerprintKey, "fingerprint-key")
+
+	for _, tc := range []struct {
+		name   string
+		opts   []configx.OptionModifier
+		madeUp bool // SecretsDefault was read before, as the cookie store does
+		want   bool
+	}{
+		{name: "neither set"},
+		{name: "secrets.default made up", madeUp: true},
+		{name: "fingerprint_key does not sign the cookie", opts: []configx.OptionModifier{key}, madeUp: true},
+		{name: "known_device_cookie.secrets", opts: []configx.OptionModifier{cookie}, want: true},
+		{name: "known_device_cookie.secrets and a made-up secrets.default", opts: []configx.OptionModifier{cookie}, madeUp: true, want: true},
+		{name: "secrets.default", opts: []configx.OptionModifier{def}, want: true},
+		{name: "secrets.default read before", opts: []configx.OptionModifier{def}, madeUp: true, want: true},
+	} {
+		t.Run("case="+tc.name, func(t *testing.T) {
+			t.Parallel()
+			c := config.MustNew(t, logrusx.New("", ""), &contextx.Default{}, append(tc.opts, configx.SkipValidation())...)
+			if tc.madeUp {
+				c.SecretsDefault(t.Context())
+			}
+			assert.Equal(t, tc.want, c.KnownDeviceCookieSecretsConfigured(t.Context()))
+		})
+	}
+}

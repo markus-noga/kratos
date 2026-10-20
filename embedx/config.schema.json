@@ -2936,7 +2936,7 @@
       "properties": {
         "fingerprint_key": {
           "title": "Defense fingerprint key",
-          "description": "Secret from which the keyed digests of identifiers and submitted credentials handed to the attack defense are derived. Defaults to the first entry of secrets.default. Changing it resets the defense's counters.",
+          "description": "Secret from which the keyed digests of identifiers and submitted credentials handed to the attack defense are derived. Defaults to the first entry of secrets.default. Changing it resets the defense's counters. With an attack defense installed, serve refuses to start unless this or secrets.default is configured.",
           "type": "string",
           "minLength": 16
         },
@@ -2983,7 +2983,7 @@
             "secrets": {
               "type": "array",
               "title": "Known device cookie secrets",
-              "description": "The first secret signs the cookie, all of them verify it. Defaults to secrets.default. Unlike session cookies this cookie lives for months, so keep an old secret listed for the full lifespan plus the rotation window. Dropping it makes the cookies it signed fail verification: the attack defense then sees a forged cookie (stricter limits) until the user's next login replaces it, as a cookie of a dropped secret cannot be told from a forged one.",
+              "description": "The first secret signs the cookie, all of them verify it. Defaults to secrets.default. Unlike session cookies this cookie lives for months, so keep an old secret listed for the full lifespan plus the rotation window. Dropping it makes the cookies it signed fail verification: the attack defense then sees a forged cookie (stricter limits) until the user's next login replaces it, as a cookie of a dropped secret cannot be told from a forged one. When the cookie is in use with an attack defense, serve refuses to start unless this or secrets.default is configured.",
               "items": {
                 "type": "string",
                 "minLength": 16

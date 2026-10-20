@@ -111,8 +111,7 @@ func (c *httpChannel) Dispatch(ctx context.Context, msg Message) (err error) {
 		WithField("message_id", msg.ID).
 		WithField("message_nid", msg.NID).
 		WithField("message_type", msg.Type).
-		WithField("message_template_type", msg.TemplateType).
-		WithField("message_subject", msg.Subject)
+		WithField("message_template_type", msg.TemplateType)
 
 	if res.StatusCode >= 200 && res.StatusCode < 300 {
 		logger.Debug("Courier sent out mailer.")
@@ -124,10 +123,14 @@ func (c *httpChannel) Dispatch(ctx context.Context, msg Message) (err error) {
 		res.StatusCode,
 	)
 
-	body, _ := io.ReadAll(res.Body)
+	// Only the size of the body, counted up to the limit above: a provider may
+	// echo the request it rejects, and with it the subject and body, which hold
+	// codes.
+	n, _ := io.Copy(io.Discard, res.Body)
 	logger.
 		WithError(err).
-		WithField("http_response_body", string(body)).
+		WithField("http_response_status_code", res.StatusCode).
+		WithField("http_response_body_length", n).
 		Error("sending mail via HTTP failed.")
 
 	return errors.WithStack(err)

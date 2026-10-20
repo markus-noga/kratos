@@ -203,19 +203,24 @@ func New(
 	return m
 }
 
-// Identify enables reporting to segment.
+// Identify enables reporting to segment, every 6 hours. An operator who opted
+// out gets nothing sent, not even a startup event that says so.
 func (sw *Service) Identify() {
-	IdentifySend(sw, true)
+	if sw.optOut {
+		return
+	}
 
-	// User has not opt-out then make identify to be sent every 6 hours
-	if !sw.optOut {
-		for range time.Tick(time.Hour * 6) {
-			IdentifySend(sw, false)
-		}
+	IdentifySend(sw, true)
+	for range time.Tick(time.Hour * 6) {
+		IdentifySend(sw, false)
 	}
 }
 
 func IdentifySend(sw *Service, startup bool) {
+	if sw.optOut {
+		return
+	}
+
 	if err := resilience.Retry(sw.l, time.Minute*5, time.Hour*6, func() error {
 		return sw.c.Enqueue(analytics.Identify{
 			InstanceId:   sw.instanceId,

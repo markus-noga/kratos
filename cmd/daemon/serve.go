@@ -19,6 +19,7 @@ import (
 	"github.com/ory/analytics-go/v5"
 	"github.com/ory/graceful"
 	"github.com/ory/kratos/cmd/courier"
+	"github.com/ory/kratos/defense"
 	"github.com/ory/kratos/driver"
 	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/identity"
@@ -54,10 +55,40 @@ func init() {
 
 var httpMetrics = prometheusx.NewHTTPMetrics("kratos", prometheusx.HTTPPrefix, config.Version, config.Commit, config.Date)
 
+// checkDefenseFingerprintSecret refuses to serve an attack defense whose
+// digests would be keyed with a secret made up for this process: every replica,
+// and every restart, would then count attempts on its own. Only serve checks
+// it, so that commands like migrate run without the secret.
+func checkDefenseFingerprintSecret(ctx context.Context, r *driver.RegistryDefault) error {
+	if _, noop := r.Defense().(defense.Noop); noop || r.Config().DefenseFingerprintSecretConfigured(ctx) {
+		return nil
+	}
+	return errors.New("the attack defense needs defense.fingerprint_key or secrets.default: " +
+		"with a key made up per process, every replica and every restart would count attempts on its own")
+}
+
+// checkKnownDeviceCookieSecret refuses, likewise, to serve a known device
+// cookie signed with a key made up for this process: a cookie would verify only
+// on the replica that issued it, until it restarts, and count as forged anywhere
+// else, which a defense that acts on the verdict holds against returning users.
+func checkKnownDeviceCookieSecret(ctx context.Context, r *driver.RegistryDefault) error {
+	if _, noop := r.Defense().(defense.Noop); noop || !r.KnownDeviceCookieEnabled(ctx) || r.Config().KnownDeviceCookieSecretsConfigured(ctx) {
+		return nil
+	}
+	return errors.New("the known device cookie needs defense.known_device_cookie.secrets or secrets.default: " +
+		"with a key made up per process, a cookie would verify only on the replica that issued it, and only until it restarts")
+}
+
 func servePublic(ctx context.Context, r *driver.RegistryDefault, cmd *cobra.Command) (func() error, error) {
 	cfg := r.Config().ServePublic(ctx)
 	l := r.Logger()
 	if _, err := r.Config().DefenseTrustedProxies(ctx); err != nil {
+		return nil, err
+	}
+	if err := checkDefenseFingerprintSecret(ctx, r); err != nil {
+		return nil, err
+	}
+	if err := checkKnownDeviceCookieSecret(ctx, r); err != nil {
 		return nil, err
 	}
 

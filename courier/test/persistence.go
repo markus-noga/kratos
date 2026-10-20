@@ -123,7 +123,7 @@ func TestPersister(ctx context.Context, newNetworkUnlessExisting NetworkWrapper,
 			require.ErrorIs(t, err, courier.ErrQueueEmpty)
 		})
 
-		t.Run("case=a message that is sent or abandoned loses its body and template data", func(t *testing.T) {
+		t.Run("case=a message that is sent or abandoned loses its subject, body and template data", func(t *testing.T) {
 			type content struct {
 				Status       courier.MessageStatus `db:"status"`
 				Body         string                `db:"body"`
@@ -145,6 +145,7 @@ func TestPersister(ctx context.Context, newNetworkUnlessExisting NetworkWrapper,
 				var m courier.Message
 				require.NoError(t, faker.FakeData(&m))
 				m.Body, m.TemplateData = "your code is 123456", []byte(`{"code":"123456"}`)
+				m.Subject = "Use code 123456 to log in" // as Kratos' own login_code template has it
 				require.NoError(t, p.AddMessage(ctx, &m))
 				t.Cleanup(func() {
 					require.NoError(t, p.GetConnection(ctx).RawQuery(
@@ -165,7 +166,7 @@ func TestPersister(ctx context.Context, newNetworkUnlessExisting NetworkWrapper,
 					assert.Equal(t, status, after.Status)
 					assert.Empty(t, after.Body)
 					assert.Empty(t, after.TemplateData)
-					assert.Equal(t, before.Subject, after.Subject, "only the body and the template data are blanked")
+					assert.Empty(t, after.Subject, "the subjects of the code templates hold the code")
 					assert.Equal(t, before.Recipient, after.Recipient)
 				})
 			}
@@ -176,6 +177,7 @@ func TestPersister(ctx context.Context, newNetworkUnlessExisting NetworkWrapper,
 					require.NoError(t, p.SetMessageStatus(ctx, id, status))
 					after := read(t, id)
 					assert.Equal(t, status, after.Status)
+					assert.Equal(t, "Use code 123456 to log in", after.Subject, "a retry needs it")
 					assert.Equal(t, "your code is 123456", after.Body)
 					assert.NotEmpty(t, after.TemplateData)
 				})
@@ -184,12 +186,41 @@ func TestPersister(ctx context.Context, newNetworkUnlessExisting NetworkWrapper,
 			t.Run("other messages are untouched", func(t *testing.T) {
 				id, other := add(t), add(t)
 				require.NoError(t, p.SetMessageStatus(ctx, id, courier.MessageStatusSent))
-				assert.Equal(t, "your code is 123456", read(t, other).Body)
+				after := read(t, other)
+				assert.Equal(t, "Use code 123456 to log in", after.Subject)
+				assert.Equal(t, "your code is 123456", after.Body)
 			})
 
 			t.Run("an unknown message is an error", func(t *testing.T) {
 				assert.Error(t, p.SetMessageStatus(ctx, uuid.Must(uuid.NewV4()), courier.MessageStatusSent))
 			})
+		})
+
+		t.Run("case=only a processing message is requeued", func(t *testing.T) {
+			// A sent or abandoned message has lost its content and must not go out again.
+			for status, want := range map[courier.MessageStatus]courier.MessageStatus{
+				courier.MessageStatusProcessing: courier.MessageStatusQueued,
+				courier.MessageStatusQueued:     courier.MessageStatusQueued,
+				courier.MessageStatusSent:       courier.MessageStatusSent,
+				courier.MessageStatusAbandoned:  courier.MessageStatusAbandoned,
+			} {
+				t.Run("status="+status.String(), func(t *testing.T) {
+					// Its own message, removed again, so that the other cases keep theirs.
+					var m courier.Message
+					require.NoError(t, faker.FakeData(&m))
+					require.NoError(t, p.AddMessage(ctx, &m))
+					t.Cleanup(func() {
+						require.NoError(t, p.GetConnection(ctx).RawQuery(
+							"DELETE FROM courier_messages WHERE id = ? AND nid = ?", m.ID, nid).Exec())
+					})
+					require.NoError(t, p.SetMessageStatus(ctx, m.ID, status))
+
+					require.NoError(t, p.RequeueMessage(ctx, m.ID))
+					actual, err := p.FetchMessage(ctx, m.ID)
+					require.NoError(t, err)
+					assert.Equal(t, want, actual.Status)
+				})
+			}
 		})
 
 		t.Run("case=incrementing send count", func(t *testing.T) {
@@ -401,6 +432,14 @@ func TestPersister(ctx context.Context, newNetworkUnlessExisting NetworkWrapper,
 				_, p := newNetwork(t, ctx)
 				err := p.SetMessageStatus(ctx, id, courier.MessageStatusProcessing)
 				require.ErrorIs(t, err, sqlcon.ErrNoRows())
+			})
+
+			t.Run("can not requeue on another network", func(t *testing.T) {
+				_, other := newNetwork(t, ctx)
+				require.NoError(t, other.RequeueMessage(ctx, id))
+				actual, err := p.FetchMessage(ctx, id)
+				require.NoError(t, err)
+				assert.Equal(t, courier.MessageStatusProcessing, actual.Status)
 			})
 		})
 

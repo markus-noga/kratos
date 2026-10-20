@@ -38,6 +38,10 @@ func ValidateKeyID(id string) error {
 	return nil
 }
 
+// ErrUnknownKeyID is the cause of a DecryptWithAAD failure for a ciphertext whose key is not configured, such as one
+// dropped from the configuration while it was still in use.
+var ErrUnknownKeyID = errors.New("unknown key id")
+
 // KeyedSecretsProvider returns the keys of a KeyedAES. The first one encrypts, all of them decrypt.
 type KeyedSecretsProvider interface {
 	KeyedSecrets(ctx context.Context) []KeyEntry
@@ -115,7 +119,7 @@ func (a *KeyedAES) DecryptWithAAD(ctx context.Context, encrypted string, aad []b
 		}
 	}
 	if key == nil {
-		return nil, errors.WithStack(herodot.ErrForbidden().WithReasonf("Unable to decipher the encrypted message: unknown key id %q.", id))
+		return nil, errors.WithStack(herodot.ErrForbidden().WithReasonf("Unable to decipher the encrypted message: unknown key id %q.", id).WithWrap(ErrUnknownKeyID))
 	}
 
 	raw, err := hex.DecodeString(ct)

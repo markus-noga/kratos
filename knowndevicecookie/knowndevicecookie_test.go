@@ -129,7 +129,11 @@ func TestIssue(t *testing.T) {
 	t.Run("case=empty or too long identifier is refused", func(t *testing.T) {
 		t.Parallel()
 		c := newCodec(t, knowndevicecookie.Config{}, "secret-secret-secret")
-		for _, id := range []string{"  ", strings.Repeat("a", knowndevicecookie.MaxIdentifierLength+1)} {
+		for _, id := range []string{
+			"  ",
+			strings.Repeat("a", knowndevicecookie.MaxIdentifierLength+1),
+			alice + strings.Repeat(" ", defense.MaxIdentifierLength), // over the bound of defense.Canonicalize
+		} {
 			w := httptest.NewRecorder()
 			assert.Error(t, c.Issue(w, request(), id))
 			assert.Empty(t, w.Result().Cookies())
@@ -167,8 +171,13 @@ func TestVerify(t *testing.T) {
 	t.Run("case=known, whatever the spelling of the identifier", func(t *testing.T) {
 		t.Parallel()
 		for _, id := range []string{alice, "Alice@Example.com", "  ALICE@example.com\t"} {
-			assert.Equal(t, defense.DeviceKnown, c.Verify(request(good), id), id)
+			assert.Equal(t, defense.DeviceKnown, c.Verify(request(good), defense.Canonicalize(id)), id)
 		}
+	})
+
+	t.Run("case=the caller canonicalizes, once for the defense and the cookie", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, defense.DeviceNone, c.Verify(request(good), "Alice@Example.com"))
 	})
 
 	t.Run("case=a cookie of other accounts is none, not invalid", func(t *testing.T) {

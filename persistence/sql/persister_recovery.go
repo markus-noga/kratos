@@ -14,6 +14,7 @@ import (
 	"github.com/ory/kratos/identity"
 	"github.com/ory/kratos/persistence/sql/update"
 	"github.com/ory/kratos/selfservice/flow/recovery"
+	"github.com/ory/kratos/selfservice/strategy/code"
 	"github.com/ory/kratos/selfservice/strategy/link"
 	"github.com/ory/pop/v6"
 	"github.com/ory/x/otelx"
@@ -21,8 +22,9 @@ import (
 )
 
 var (
-	_ recovery.FlowPersister      = new(Persister)
-	_ link.RecoveryTokenPersister = new(Persister)
+	_ recovery.FlowPersister          = new(Persister)
+	_ link.RecoveryTokenPersister     = new(Persister)
+	_ identity.AdminRecoveryPersister = new(Persister)
 )
 
 func (p *Persister) CreateRecoveryFlow(ctx context.Context, r *recovery.Flow) (err error) {
@@ -127,6 +129,30 @@ func (p *Persister) DeleteRecoveryToken(ctx context.Context, token string) (err 
 
 	//#nosec G201 -- TableName is static
 	return p.GetConnection(ctx).RawQuery(fmt.Sprintf("DELETE FROM %s WHERE token=? AND nid = ?", new(link.RecoveryToken).TableName(ctx)), token, p.NetworkID(ctx)).Exec()
+}
+
+func (p *Persister) DeleteUnusedAdminRecoveryCodesAndLinks(ctx context.Context, identityID uuid.UUID) (codes, links int, err error) {
+	ctx, span := p.r.Tracer(ctx).Tracer().Start(ctx, "persistence.sql.DeleteUnusedAdminRecoveryCodesAndLinks")
+	defer otelx.End(span, &err)
+
+	nid := p.NetworkID(ctx)
+	// Deleted, not marked used, so that used still means used. A deleted code or
+	// link is answered like a wrong one.
+	if err := sqlcon.HandleError(p.Transaction(ctx, func(ctx context.Context, tx *pop.Connection) (err error) {
+		//#nosec G201 -- TableName is static
+		codes, err = tx.RawQuery(fmt.Sprintf("DELETE FROM %s WHERE identity_id = ? AND nid = ? AND code_type = ? AND used_at IS NULL", new(code.RecoveryCode).TableName(ctx)),
+			identityID, nid, code.RecoveryCodeTypeAdmin).ExecWithCount()
+		if err != nil {
+			return err
+		}
+		//#nosec G201 -- TableName is static
+		links, err = tx.RawQuery(fmt.Sprintf("DELETE FROM %s WHERE identity_id = ? AND nid = ? AND token_type = ? AND NOT used", new(link.RecoveryToken).TableName(ctx)),
+			identityID, nid, link.RecoveryTokenTypeAdmin).ExecWithCount()
+		return err
+	})); err != nil {
+		return 0, 0, err
+	}
+	return codes, links, nil
 }
 
 func (p *Persister) DeleteExpiredRecoveryFlows(ctx context.Context, expiresAt time.Time, limit int) (err error) {

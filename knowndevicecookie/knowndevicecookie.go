@@ -160,6 +160,10 @@ func (c *Codec) Issue(w http.ResponseWriter, r *http.Request, identifier string)
 	if c == nil {
 		return nil
 	}
+	// Over the bound of defense.Canonicalize, it has the canonical form of all oversized identifiers.
+	if len(identifier) > defense.MaxIdentifierLength {
+		return errors.New("knowndevicecookie: identifier is empty or too long")
+	}
 	id := defense.Canonicalize(identifier)
 	if id == "" || len(id) > MaxIdentifierLength {
 		return errors.New("knowndevicecookie: identifier is empty or too long")
@@ -203,7 +207,9 @@ func (c *Codec) Issue(w http.ResponseWriter, r *http.Request, identifier string)
 }
 
 // Verify returns the verdict on the cookie of r for the identifier being
-// attempted. It does no I/O.
+// attempted, in canonical form (defense.Canonicalize): the caller has it for the
+// defense already, and canonicalizing costs more than all the HMACs here. It
+// does no I/O.
 //
 //   - DeviceNone: no cookie, or an authentic one without a current entry for
 //     the identifier. On a shared device that is a new account, not a suspect.
@@ -213,7 +219,7 @@ func (c *Codec) Issue(w http.ResponseWriter, r *http.Request, identifier string)
 //     entries, or any entry of which fails its MAC, whichever account it is for.
 //   - DeviceKnown: an authentic cookie with a valid, unexpired entry for the
 //     identifier.
-func (c *Codec) Verify(r *http.Request, identifier string) defense.DeviceState {
+func (c *Codec) Verify(r *http.Request, canonicalIdentifier string) defense.DeviceState {
 	if c == nil {
 		return defense.DeviceNone
 	}
@@ -229,7 +235,6 @@ func (c *Codec) Verify(r *http.Request, identifier string) defense.DeviceState {
 	if len(raws) > MaxEntries {
 		return defense.DeviceInvalid
 	}
-	id := defense.Canonicalize(identifier)
 	var match *entry
 	for _, raw := range raws {
 		e, ok := parseEntry(raw)
@@ -242,7 +247,7 @@ func (c *Codec) Verify(r *http.Request, identifier string) defense.DeviceState {
 		if !ok {
 			return defense.DeviceInvalid
 		}
-		if match == nil && hmac.Equal(e.pseudonym, c.pseudonym(key, id)) {
+		if match == nil && hmac.Equal(e.pseudonym, c.pseudonym(key, canonicalIdentifier)) {
 			match = &e
 		}
 	}

@@ -151,11 +151,13 @@ func (p *Persister) SetMessageStatus(ctx context.Context, id uuid.UUID, ms couri
 	// A message that is done, delivered or given up on, has no use for its
 	// content, which holds what the recipient was sent: recovery and
 	// verification codes and links, login codes. Blank it, so that a copy of
-	// the database or a read of the table does not hold them. body is NOT NULL
-	// on some databases, so it becomes empty, and template_data is NULL.
+	// the database or a read of the table does not hold them. The subject goes
+	// too: the code templates put the code there ("Use code 123456 to log in");
+	// template_type still says what was sent. body and subject are NOT NULL on
+	// some databases, so they become empty, and template_data is NULL.
 	query := "UPDATE courier_messages SET status = ? WHERE id = ? AND nid = ?"
 	if ms == courier.MessageStatusSent || ms == courier.MessageStatusAbandoned {
-		query = "UPDATE courier_messages SET status = ?, body = '', template_data = NULL WHERE id = ? AND nid = ?"
+		query = "UPDATE courier_messages SET status = ?, subject = '', body = '', template_data = NULL WHERE id = ? AND nid = ?"
 	}
 
 	count, err := p.GetConnection(ctx).RawQuery(query, ms, id, p.NetworkID(ctx)).ExecWithCount()
@@ -168,6 +170,16 @@ func (p *Persister) SetMessageStatus(ctx context.Context, id uuid.UUID, ms couri
 	}
 
 	return nil
+}
+
+func (p *Persister) RequeueMessage(ctx context.Context, id uuid.UUID) (err error) {
+	ctx, span := p.r.Tracer(ctx).Tracer().Start(ctx, "persistence.sql.RequeueMessage")
+	defer otelx.End(span, &err)
+
+	return sqlcon.HandleError(p.GetConnection(ctx).RawQuery(
+		"UPDATE courier_messages SET status = ? WHERE id = ? AND nid = ? AND status = ?",
+		courier.MessageStatusQueued, id, p.NetworkID(ctx), courier.MessageStatusProcessing,
+	).Exec())
 }
 
 func (p *Persister) IncrementMessageSendCount(ctx context.Context, id uuid.UUID) (err error) {

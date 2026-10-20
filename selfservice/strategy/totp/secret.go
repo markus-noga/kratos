@@ -47,14 +47,23 @@ func SealURL(ctx context.Context, d interface {
 // OpenURL returns the plaintext TOTP URL of a stored `totp_url`. If the stored value should be replaced (it is
 // plaintext although a key is configured, or it was encrypted with an older key), upgraded is its replacement,
 // else empty.
+//
+// A secret that cannot be opened is a fault of the server, which the user cannot fix, so the error is a 5xx: a 4xx
+// would blame the request, and an attack defense would count it as a wrong code.
 func OpenURL(ctx context.Context, d interface {
 	cipher.TOTPProvider
 	config.Provider
 }, identityID uuid.UUID, stored string) (url, upgraded string, err error) {
 	if isPlaintextURL(stored) && !d.Config().TOTPAcceptPlaintext(ctx) {
-		return "", "", errors.WithStack(herodot.ErrForbidden().WithReason("The TOTP secret is stored in plaintext, which is not accepted."))
+		return "", "", cannotOpen(herodot.ErrMisconfiguration(), "The TOTP secret is stored in plaintext, which is not accepted.", nil)
 	}
 	return openURL(ctx, d, identityID, stored)
+}
+
+// cannotOpen is the error of a secret that cannot be opened. Its reason is the same whatever the cause: the cause
+// goes into debug, which the log shows and API responses leave out, as it may name a key id.
+func cannotOpen(e *herodot.DefaultError, cause string, err error) error {
+	return errors.WithStack(e.WithReason("The TOTP secret could not be opened.").WithDebug(cause).WithWrap(err))
 }
 
 // UpgradeURL returns the replacement of a stored `totp_url` that is plaintext or under an old key, or "" if it is
@@ -87,7 +96,17 @@ func openURL(ctx context.Context, d interface {
 	c := d.TOTPCipher(ctx)
 	plain, err := c.DecryptWithAAD(ctx, stored, secretAAD(identityID))
 	if err != nil {
-		return "", "", err
+		// The cipher's errors are herodot errors, whose Error() is only their status text: the cause is the reason.
+		cause := err.Error()
+		if r := herodot.ReasonCarrier(nil); errors.As(err, &r) && r.Reason() != "" {
+			cause = r.Reason()
+		}
+		if errors.Is(err, cipher.ErrUnknownKeyID) {
+			// A key dropped from secrets.totp while secrets still use it.
+			return "", "", cannotOpen(herodot.ErrMisconfiguration(), cause, err)
+		}
+		// Damaged, or copied from another identity.
+		return "", "", cannotOpen(herodot.ErrInternalServerError(), cause, err)
 	}
 	if !c.IsCurrent(ctx, stored) {
 		if upgraded, err = SealURL(ctx, d, identityID, string(plain)); err != nil {

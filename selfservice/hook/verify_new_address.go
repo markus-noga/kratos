@@ -13,6 +13,8 @@ import (
 	"github.com/pkg/errors"
 	"github.com/tidwall/sjson"
 
+	"github.com/ory/kratos/defense"
+	"github.com/ory/kratos/defense/gate"
 	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/identity"
 	"github.com/ory/kratos/selfservice/flow"
@@ -45,6 +47,7 @@ type (
 		httpx.WriterProvider
 		otelx.Provider
 		session.ManagementProvider
+		gate.Dependencies
 	}
 
 	VerifyNewAddressProvider interface {
@@ -107,6 +110,13 @@ func (e *VerifyNewAddress) execute(
 
 	// Process the first changed address (we can only redirect to one verification flow).
 	addr := changed[0]
+
+	// Defense: Check via a gate before the lookup, as an attempt to verify the address. This hook messages it in place
+	// of saving the update, on every such update, and before PostSettingsHook checks what an update adds. A deny
+	// refuses the update, which saves and sends nothing.
+	if err := gate.New(e.r, w, r, defense.MethodVerification).Check(ctx, addr.Value, ""); err != nil {
+		return err
+	}
 
 	// Reject if the new address already belongs to a different identity
 	existingAddr, err := e.r.PrivilegedIdentityPool().FindVerifiableAddressByValue(ctx, addr.Via, addr.Value)

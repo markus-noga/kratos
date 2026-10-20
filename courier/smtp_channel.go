@@ -118,7 +118,6 @@ func (c *SMTPChannel) Dispatch(ctx context.Context, msg Message) (err error) {
 		WithField("message_nid", msg.NID).
 		WithField("message_type", msg.Type).
 		WithField("message_template_type", msg.TemplateType).
-		WithField("message_subject", msg.Subject).
 		WithField("trace_id", span.SpanContext().TraceID())
 
 	tmpl, err := c.newEmailTemplateFromMessage(c.d, msg)

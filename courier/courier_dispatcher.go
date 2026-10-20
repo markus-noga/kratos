@@ -59,7 +59,6 @@ func (c *courier) DispatchMessage(ctx context.Context, msg Message) (err error) 
 		WithField("message_nid", msg.NID).
 		WithField("message_type", msg.Type).
 		WithField("message_template_type", msg.TemplateType).
-		WithField("message_subject", msg.Subject).
 		WithField("trace_id", span.SpanContext().TraceID())
 
 	if err := c.deps.CourierPersister().IncrementMessageSendCount(ctx, msg.ID); err != nil {
@@ -117,8 +116,7 @@ func (c *courier) DispatchQueue(ctx context.Context) (err error) {
 			WithField("message_id", msg.ID).
 			WithField("message_nid", msg.NID).
 			WithField("message_type", msg.Type).
-			WithField("message_template_type", msg.TemplateType).
-			WithField("message_subject", msg.Subject)
+			WithField("message_template_type", msg.TemplateType)
 
 		if msg.SendCount > maxRetries {
 			if err := c.deps.CourierPersister().SetMessageStatus(ctx, msg.ID, MessageStatusAbandoned); err != nil {
@@ -147,8 +145,10 @@ func (c *courier) DispatchQueue(ctx context.Context) (err error) {
 				}
 			}
 
+			// Only what is still processing goes back: a channel abandons a message
+			// it must not retry (e.g. SMTP 5xx), and that is final.
 			for _, replace := range messages[k:] {
-				if err := c.deps.CourierPersister().SetMessageStatus(ctx, replace.ID, MessageStatusQueued); err != nil {
+				if err := c.deps.CourierPersister().RequeueMessage(ctx, replace.ID); err != nil {
 					logger.
 						WithError(err).
 						Error(`Unable to reset the failed message's status to "queued".`)

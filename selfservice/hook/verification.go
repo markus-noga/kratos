@@ -16,6 +16,8 @@ import (
 
 	"github.com/gofrs/uuid"
 
+	"github.com/ory/kratos/defense"
+	"github.com/ory/kratos/defense/gate"
 	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/identity"
 	"github.com/ory/kratos/selfservice/flow"
@@ -47,6 +49,7 @@ type (
 		identity.PrivilegedPoolProvider
 		httpx.WriterProvider
 		otelx.Provider
+		gate.Dependencies
 	}
 	Verifier struct {
 		r verifierDependencies
@@ -64,13 +67,23 @@ func (e *Verifier) ExecutePostRegistrationPostPersistHook(w http.ResponseWriter,
 			v.SessionID = uuid.NullUUID{UUID: s.ID, Valid: true}
 			v.IdentityID = uuid.NullUUID{UUID: s.Identity.ID, Valid: true}
 			v.AMR = s.AMR
-		})
+		}, nil)
 	})
 }
 
 func (e *Verifier) ExecuteSettingsPostPersistHook(w http.ResponseWriter, r *http.Request, params settings.PostHookPostPersistExecutorParams) error {
 	return otelx.WithSpan(r.Context(), "selfservice.hook.Verifier.ExecuteSettingsPostPersistHook", func(ctx context.Context) error {
-		return e.do(w, r.WithContext(ctx), params.Updated, params.Flow, nil)
+		// Defense: any settings update has the identity's pending addresses messaged here, and concurrent updates all
+		// read an address as pending, so each message is checked right before it is sent, as an attempt to verify the
+		// address. The update is saved by then, so a deny withholds the message, not the update: no response writer.
+		sends := gate.New(e.r, nil, r, defense.MethodVerification)
+		return e.do(w, r.WithContext(ctx), params.Updated, params.Flow, nil, func(ctx context.Context, a *identity.VerifiableAddress) error {
+			// An address the update added was checked before the update was saved.
+			if settings.AddressChecked(ctx, *a) {
+				return nil
+			}
+			return sends.Check(ctx, a.Value, "")
+		})
 	})
 }
 
@@ -96,7 +109,7 @@ func (e *Verifier) ExecuteLoginPostHook(w http.ResponseWriter, r *http.Request, 
 		}
 		vf.IdentityID = uuid.NullUUID{UUID: iID, Valid: iID != uuid.Nil}
 		vf.AMR = s.AMR
-	})
+	}, nil)
 }
 
 const InternalContextRegistrationVerificationFlow = "registration_verification_flow_continue_with"
@@ -110,6 +123,9 @@ func (e *Verifier) do(
 		flow.InternalContexter
 	},
 	flowCallback func(*verification.Flow),
+	// check, if set, is asked before each message. A message it denies (gate.Denied) is withheld, and its address
+	// stays pending.
+	check func(context.Context, *identity.VerifiableAddress) error,
 ) (err error) {
 	ctx, span := e.r.Tracer(r.Context()).Tracer().Start(r.Context(), "selfservice.hook.Verifier.do")
 	r = r.WithContext(ctx)
@@ -139,6 +155,14 @@ func (e *Verifier) do(
 
 		if address.Value == "" {
 			continue
+		}
+
+		if check != nil {
+			if err := check(ctx, address); gate.Denied(err) {
+				continue
+			} else if err != nil {
+				return err
+			}
 		}
 
 		var csrf string

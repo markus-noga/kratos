@@ -5,12 +5,16 @@ package courier_test
 
 import (
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"testing"
 
 	"github.com/gofrs/uuid"
+	"github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -173,4 +177,92 @@ func TestDispatchMessageEmitsEventWithNID(t *testing.T) {
 	})
 	require.GreaterOrEqual(t, k, 0, "NID attribute not found on event")
 	assert.NotEmpty(t, attrs[k].Value.AsString())
+}
+
+// Kratos' code templates put the code into the subject ("Use code 123456 to log
+// in"), and the body holds it too: no log line of a failed delivery may contain
+// it, at any level.
+func TestDispatchLogsNoCode(t *testing.T) {
+	t.Parallel()
+
+	// dispatch queues a message with a code, runs the queue once and returns
+	// what was logged. Each case has its own registry, logger and server.
+	dispatch := func(t *testing.T, values map[string]any) []*logrus.Entry {
+		t.Helper()
+		_, reg := pkg.NewRegistryDefaultWithDSN(t, "", configx.WithValues(values))
+		// The test registry logs errors only; warnings and debug lines count too.
+		reg.Logger().Logger.SetLevel(logrus.TraceLevel)
+		hook := logtest.NewLocal(reg.Logger().Logger)
+
+		c, err := reg.Courier(t.Context())
+		require.NoError(t, err)
+		_, err = c.QueueEmail(t.Context(), templates.NewTestStub(&templates.TestStubModel{
+			To:      "user@example.org",
+			Subject: "Use code 987654 to log in",
+			Body:    "Your code is 987654",
+		}))
+		require.NoError(t, err)
+		require.NoError(t, c.DispatchQueue(t.Context()))
+		return hook.AllEntries()
+	}
+	assertNoCode := func(t *testing.T, entries []*logrus.Entry) {
+		t.Helper()
+		var warnings int
+		for _, e := range entries {
+			if e.Level <= logrus.WarnLevel {
+				warnings++
+			}
+			line, err := e.String()
+			require.NoError(t, err)
+			assert.NotContains(t, line, "987654")
+		}
+		assert.NotZero(t, warnings, "the failure is logged")
+	}
+	smtpValues := func(smtpURL string) map[string]any {
+		return map[string]any{
+			config.ViperKeyCourierSMTPURL:              smtpURL,
+			config.ViperKeyCourierSMTPFrom:             "from@example.org",
+			config.ViperKeyClientSMTPNoPrivateIPRanges: false,
+		}
+	}
+
+	t.Run("case=the SMTP server rejects the message", func(t *testing.T) {
+		t.Parallel()
+		smtpURL, _ := newReplyingSMTPServer(t, func(int) string { return "554 5.7.1 Message rejected" })
+		assertNoCode(t, dispatch(t, smtpValues(smtpURL)))
+	})
+
+	t.Run("case=the SMTP server hangs up", func(t *testing.T) {
+		t.Parallel()
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = l.Close() })
+		go func() {
+			for {
+				conn, err := l.Accept()
+				if err != nil {
+					return
+				}
+				_ = conn.Close()
+			}
+		}()
+		assertNoCode(t, dispatch(t, smtpValues(fmt.Sprintf("smtp://%s/?disable_starttls=true", l.Addr()))))
+	})
+
+	// Mail APIs may echo a request they reject, and with it the message. The HTTP
+	// client gives up on a 5xx itself; any other status reaches the channel.
+	for _, status := range []int{http.StatusInternalServerError, http.StatusBadRequest} {
+		t.Run(fmt.Sprintf("case=the HTTP provider answers %d, echoing the request", status), func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+				_, _ = io.Copy(w, r.Body)
+			}))
+			t.Cleanup(srv.Close)
+			assertNoCode(t, dispatch(t, map[string]any{
+				config.ViperKeyCourierDeliveryStrategy:  "http",
+				config.ViperKeyCourierHTTPRequestConfig: fmt.Sprintf(`{"url": %q, "method": "POST", "body": "file://./stub/request.config.mailer.jsonnet"}`, srv.URL),
+			}))
+		})
+	}
 }

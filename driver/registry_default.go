@@ -618,23 +618,32 @@ func (m *RegistryDefault) Defense() defense.Defense {
 	return m.defense
 }
 
-// KnownDeviceCookie returns the codec for the KnownDeviceCookie, or nil if it
-// is not enabled: forced by defense.known_device_cookie.enabled, or, at its
-// default auto, when the attack defense uses the verdict. It is built per call so that secret and config changes apply
-// on hot reload; deriving the keys costs a few hashes.
-func (m *RegistryDefault) KnownDeviceCookie(ctx context.Context) *knowndevicecookie.Codec {
-	c := m.Config()
-	switch c.KnownDeviceCookieMode(ctx) {
+// KnownDeviceCookieEnabled says whether the KnownDeviceCookie is issued and
+// validated: forced by defense.known_device_cookie.enabled, or, at its default
+// auto, when the attack defense uses the verdict.
+func (m *RegistryDefault) KnownDeviceCookieEnabled(ctx context.Context) bool {
+	switch m.Config().KnownDeviceCookieMode(ctx) {
 	case config.KnownDeviceCookieOff:
-		return nil
+		return false
 	case config.KnownDeviceCookieAuto:
 		if !m.Defense().UsesKnownDeviceVerdict() {
-			return nil
+			return false
 		}
 		m.knownDeviceAutoOnce.Do(func() {
 			m.Logger().Info("The known device cookie is enabled because the attack defense uses it. Set defense.known_device_cookie.enabled to false to turn it off.")
 		})
 	}
+	return true
+}
+
+// KnownDeviceCookie returns the codec for the KnownDeviceCookie, or nil if it
+// is not enabled (see KnownDeviceCookieEnabled). It is built per call so that secret and config changes apply
+// on hot reload; deriving the keys costs a few hashes.
+func (m *RegistryDefault) KnownDeviceCookie(ctx context.Context) *knowndevicecookie.Codec {
+	if !m.KnownDeviceCookieEnabled(ctx) {
+		return nil
+	}
+	c := m.Config()
 	codec, err := knowndevicecookie.New(c.KnownDeviceCookieSecrets(ctx), knowndevicecookie.Config{
 		Name:     c.KnownDeviceCookieName(ctx),
 		Lifespan: c.KnownDeviceCookieLifespan(ctx),
@@ -947,6 +956,9 @@ func (m *RegistryDefault) RegistrationCodePersister() code.RegistrationCodePersi
 }
 func (m *RegistryDefault) PendingTraitsChangePersister() identity.PendingTraitsChangePersister {
 	return m.Persister()
+}
+func (m *RegistryDefault) AdminRecoveryPersister() identity.AdminRecoveryPersister {
+	return m.persister
 }
 
 func (m *RegistryDefault) TransactionalPersisterProvider() transaction.Persister {

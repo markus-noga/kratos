@@ -228,10 +228,22 @@ func (s *Strategy) verificationHandleFormSubmission(ctx context.Context, w http.
 		return s.handleVerificationError(r, f, body, err)
 	}
 
-	// Defense: Check via the gate, before any lookup or sending. Only a strategy can call it, as only it knows it is
-	// responsible and has its payload.
-	// This step sends a code to the address, so it is defended like a route that sends messages.
-	if err := gate.From(ctx).Check(ctx, body.Email, ""); err != nil {
+	// The flow of a change that verify_new_address keeps pending resends its code to the pending address, whatever
+	// address the client names. Its lookup by the flow may precede the check: it names no address the client chose.
+	ptc, ptcErr := s.deps.PendingTraitsChangePersister().GetPendingTraitsChangeByVerificationFlow(ctx, f.ID)
+	if ptcErr != nil && !errors.Is(ptcErr, sqlcon.ErrNoRows()) {
+		return s.handleVerificationError(r, f, body, ptcErr)
+	}
+	to := body.Email
+	if ptcErr == nil {
+		to = ptc.NewAddressValue
+	}
+
+	// Defense: Check via the gate, before any lookup of the address or sending. Only a strategy can call it, as only it
+	// knows it is responsible and has its payload.
+	// This step sends a code to an address, so it is defended like a route that sends messages, by the address that
+	// receives the code.
+	if err := gate.From(ctx).Check(ctx, to, ""); err != nil {
 		return s.handleVerificationError(r, f, body, err)
 	}
 
@@ -241,11 +253,7 @@ func (s *Strategy) verificationHandleFormSubmission(ctx context.Context, w http.
 
 	via := hackyInferChannel(body.Email)
 
-	ptc, ptcErr := s.deps.PendingTraitsChangePersister().GetPendingTraitsChangeByVerificationFlow(ctx, f.ID)
 	if ptcErr != nil {
-		if !errors.Is(ptcErr, sqlcon.ErrNoRows()) {
-			return s.handleVerificationError(r, f, body, ptcErr)
-		}
 		if err := s.deps.CodeSender().SendVerificationCode(ctx, f, via, body.Email); err != nil {
 			if !errors.Is(err, ErrUnknownAddress()) {
 				return s.handleVerificationError(r, f, body, err)
